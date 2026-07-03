@@ -18,3 +18,4 @@
 "Assets\JayoPhysBones\Scripts\PhysBoneChain.cs"
 "Assets\JayoPhysBones\Scripts\PhysBonePlugin.cs"
 "Assets\JayoPhysBones\Scripts\WindowDrag.cs"
+"Assets\JayoPhysBones\Scripts\NativeFileDialog.cs"

@@ -18,3 +18,4 @@
 "Assets\JayoJigglePhysics\Scripts\JiggleBone.cs"
 "Assets\JayoJigglePhysics\Scripts\JiggleWindowDrag.cs"
 "Assets\JayoJigglePhysics\Scripts\JigglePhysicsPlugin.cs"
+"Assets\JayoJigglePhysics\Scripts\NativeFileDialog.cs"
