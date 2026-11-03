@@ -4930,8 +4930,8 @@ MonoBehaviour:
     m_HorizontalOverflow: 1
     m_VerticalOverflow: 1
     m_LineSpacing: 1
-  m_Text: drag to scrub - lanes shows what each key moves - green/red boxes gate
-    capture and paste
+  m_Text: 'Drag to scrub. Lanes show what each key moves; green/red boxes gate
+    capture and paste.'
 --- !u!1 &6314442626903269105
 GameObject:
   m_ObjectHideFlags: 0

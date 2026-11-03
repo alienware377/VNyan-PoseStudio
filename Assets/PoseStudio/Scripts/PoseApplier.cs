@@ -704,9 +704,8 @@ namespace PoseStudio
                     ib.tgtRot = Quaternion.Inverse(ib.space.rotation) * endRestRot;
                 }
                 else { ib.tgtPos = endRestPos; ib.tgtRot = endRestRot; }
-                // The capture is this avatar's own rest pose, so it needs no scaling, but the
-                // user's fit-up has to land on TOP of it: without this a "spread the feet"
-                // adjustment was thrown away the moment the goal captured.
+                // The capture is this avatar's own rest pose, so it needs no scaling. The fit-up
+                // offset is added on top, so adjustments like "spread the feet" still apply.
                 ib.tgtPos += ib.fitPos;
                 ib.captured = true;
                 if (VERBOSE) Debug.Log("[PoseStudio]   pinned " + ib.goal.name + " at " + ib.tgtPos

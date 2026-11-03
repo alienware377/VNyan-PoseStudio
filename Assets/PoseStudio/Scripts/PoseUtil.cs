@@ -84,8 +84,7 @@ namespace PoseStudio
             return null;
         }
 
-        // Titles and section headers baked into the .vnobj still carry long dashes
-        // (e.g. "Pose Studio: Toggles" written with an em dash); show them as ": " or nothing.
+        // Older bundles used long dashes in headings; normalise them to ": ".
         public static void CleanDashes(GameObject root)
         {
             if (root == null) return;

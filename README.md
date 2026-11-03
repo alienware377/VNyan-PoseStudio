@@ -1,6 +1,6 @@
 # VNyan Pose Studio
 
-[![Latest Release](https://img.shields.io/github/v/release/alienware377/VNyan-PhysBones-BreastPhysics-PoseStudio?label=download&color=brightgreen)](https://github.com/alienware377/VNyan-PhysBones-BreastPhysics-PoseStudio/releases/latest)
+[![Latest Release](https://img.shields.io/github/v/release/alienware377/VNyan-PoseStudio?label=download&color=brightgreen)](https://github.com/alienware377/VNyan-PoseStudio/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **A free VNyan plugin for building toggles, poses and looping dances for your VRM VTuber avatar, right inside VNyan. No Unity, no keyframe editor skills needed.**
@@ -261,10 +261,10 @@ Run this from the repo root (the `.rsp` file uses paths relative to it):
 csc.exe -noconfig @build/build_posestudio.rsp
 ```
 
-The `.rsp` takes its references from `C:\Program Files\VNyan\VNyan_Data\Managed`. If your VNyan
-lives somewhere else, change those paths in the `.rsp`. It uses the .NET Framework `csc.exe`
-that comes with Windows (C# 5). The DLL **must** stay named `PoseStudio.dll`: the bundle finds its
-scripts by assembly name.
+The `.rsp` takes its references from `VNyan_Data\Managed` inside a VNyan folder, written as
+`C:\Program Files\VNyan` in the file. Change those paths to point at your own VNyan folder.
+It uses the .NET Framework `csc.exe` that comes with Windows (C# 5). The DLL **must** stay
+named `PoseStudio.dll`: the bundle finds its scripts by assembly name.
 
 ### `.vnobj` bundle (needs Unity 2022.3.x)
 

@@ -899,10 +899,9 @@ namespace PoseStudio
             if (idleAutoOn && !idleItem.active) { idleAutoOn = false; idleSuppressed = true; }
 
             bool want = lost && !majorOn && !idleSuppressed;
-            // Holding still for a moment while tracking is perfectly alive used to start the
-            // idle animation for a frame or two before the next flicker of motion killed it,
-            // read on screen as a twitch. Once it starts it now stays for a beat, and it has
-            // to be quiet a good while longer than the delay before starting at all.
+            // Hysteresis: require stillness for IDLE_CONFIRM beyond the delay before starting,
+            // and keep the idle anim on for at least IDLE_MIN_ON once started, so brief pauses
+            // in live tracking don't make it twitch on and off.
             if (want && !idleAutoOn && (Time.time - lastMotionTime) < Mathf.Max(0.2f, delay) + IDLE_CONFIRM)
                 want = false;
             if (!want && idleAutoOn && (Time.time - idleOnSince) < IDLE_MIN_ON) want = true;
@@ -1169,9 +1168,7 @@ namespace PoseStudio
                         opts.Add("[M] " + nm);
                     }
             }
-            // Whole-animation fit (per body group) is edited with the "Fit to this model"
-            // sliders. Per-group rows used to be listed here too, but they were never wired to
-            // the transform sliders (a keyframe edit wrote a channel with no id), so they're gone.
+            // Whole-animation fit (per body group) is edited with the "Fit to this model" sliders, not here.
 
             if (opts.Count == 0) opts.Add("(no transforms)");
 

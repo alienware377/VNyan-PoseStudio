@@ -55,8 +55,7 @@ public static class PoseStudioBuild
     }
 
     // Invoked via: Unity.exe -batchmode -quit -executeMethod PoseStudioBuild.Diagnose
-    // Loads the built .vnobj, instantiates it, and reports the state of every
-    // InputField so we can see why their text won't render.
+    // Loads the built .vnobj and logs every InputField's font and text settings.
     public static void Diagnose()
     {
         string path = "AssetBundles/PoseStudio.vnobj";
@@ -227,7 +226,7 @@ public static class PoseStudioBuild
         y += 32f;
 
         MakeText(root.transform, "Text_TLStatus",
-            "drag to scrub - lanes shows what each key moves - green/red boxes gate capture and paste",
+            "Drag to scrub. Lanes show what each key moves; green/red boxes gate capture and paste.",
             P, y, cw, 18f, 10, TextAnchor.MiddleLeft, FontStyle.Italic);
 
         GameObject prefab = PrefabUtility.SaveAsPrefabAsset(root, prefabPath);

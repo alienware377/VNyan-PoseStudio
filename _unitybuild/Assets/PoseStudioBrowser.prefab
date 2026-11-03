@@ -313,7 +313,7 @@ MonoBehaviour:
     m_HorizontalOverflow: 1
     m_VerticalOverflow: 1
     m_LineSpacing: 1
-  m_Text: "Model Bones \u2014 pick one to add"
+  m_Text: 'Model Bones: pick one to add'
 --- !u!1 &5124811482559618698
 GameObject:
   m_ObjectHideFlags: 0
