@@ -84,7 +84,7 @@ namespace PoseStudio
             return null;
         }
 
-        // Older bundles used long dashes in headings; normalise them to ": ".
+        // The shipped bundle still has long dashes in some headings; show them as ": ".
         public static void CleanDashes(GameObject root)
         {
             if (root == null) return;
