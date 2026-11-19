@@ -12,6 +12,7 @@
 -reference:"C:\Program Files\VNyan\VNyan_Data\Managed\UnityEngine.TextRenderingModule.dll"
 -reference:"C:\Program Files\VNyan\VNyan_Data\Managed\UnityEngine.IMGUIModule.dll"
 -reference:"C:\Program Files\VNyan\VNyan_Data\Managed\UnityEngine.InputLegacyModule.dll"
+-reference:"C:\Program Files\VNyan\VNyan_Data\Managed\UnityEngine.UnityWebRequestModule.dll"
 -reference:"C:\Program Files\VNyan\VNyan_Data\Managed\VNyanInterface.dll"
 -reference:"C:\Program Files\VNyan\VNyan_Data\Managed\Newtonsoft.Json.dll"
 "Assets\PoseStudio\Scripts\PoseConfig.cs"
@@ -22,3 +23,4 @@
 "Assets\PoseStudio\Scripts\AnimImport.cs"
 "Assets\PoseStudio\Scripts\TimelineEditor.cs"
 "Assets\PoseStudio\Scripts\PoseStudioPlugin.cs"
+"Assets\PoseStudio\Scripts\PluginChrome.cs"

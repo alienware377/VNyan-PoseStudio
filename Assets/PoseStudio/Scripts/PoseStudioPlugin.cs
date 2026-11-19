@@ -110,6 +110,9 @@ namespace PoseStudio
 
         const string BUTTON_NAME = "Pose Studio";
         const string CONFIG_FILE = "posestudio.json";
+        public const string VERSION = "v2.6.0";
+        // GitHub repo the update check reads (the old ...-BreastPhysics-PoseStudio name only redirects)
+        public const string REPO = "alienware377/VNyan-PoseStudio";
 
         // Slider keys -> fields. Order also defines UI layout order in the build script.
         static readonly string[] SLIDER_KEYS =
@@ -182,6 +185,9 @@ namespace PoseStudio
         readonly Dictionary<string, Slider> sliders = new Dictionary<string, Slider>();
         readonly Dictionary<string, InputField> valueInputs = new Dictionary<string, InputField>();
         Text statusLabel;
+        Text windowTitle;
+        int windowTitleSize = 15;
+        float windowTitleLeft = 12f;
 
         // Hotkey binding UI/state.
         Text hotkeyLabel;
@@ -206,6 +212,7 @@ namespace PoseStudio
         RectTransform browserContent;
         Text browserStatus;
         Text browserTitle;
+        int browserTitleSize = 15;
         string browserMode = "bone";       // "bone", "mesh", "blend", or "trigger"
         GameObject browserAvatar;          // avatar whose tree is shown
         readonly Dictionary<Transform, bool> boneExpanded = new Dictionary<Transform, bool>();
@@ -230,6 +237,12 @@ namespace PoseStudio
             SetupBrowser();
             timeline = new TimelineEditor();
             timeline.Setup(this, timelinePrefab);
+
+            // GitHub update check: the "Update vX" badge sits just left of the main window's X,
+            // and the centred title moves to the left to make room for it (OnUpdateBadge)
+            if (window != null)
+                PluginChrome.CheckForUpdate(this, window.GetComponent<RectTransform>(), REPO, VERSION,
+                    "[PoseStudio] ", uiFont, 0f, OnUpdateBadge);
 
             // Late pass: after the physics have run (they overwrite scale on jiggle bones),
             // re-apply the pose's bone scale so a "bigger chest"-style toggle still wins.
@@ -455,8 +468,63 @@ namespace PoseStudio
             WireButton("Button_AddIK", OnAddIK);
             WireButton("Button_RemoveIK", OnRemoveIK);
 
+            // Window chrome: the shared X at the top-right replaces the footer Close (Reload and Save
+            // spread over its row). The centred title gives up the X's width on BOTH sides, so it
+            // stays centred where it was but its rect no longer reaches under the X.
+            if (wrt != null)
+            {
+                PluginChrome.EnsureCloseX(wrt, OnCloseClicked, uiFont);
+                PluginChrome.HideOtherClose(wrt, "Button_Close");
+                windowTitle = FindControl<Text>("Title");
+                if (windowTitle != null)
+                {
+                    windowTitleSize = windowTitle.fontSize;
+                    windowTitleLeft = TitleLeft(windowTitle);
+                    float right = wrt.rect.width - (PluginChrome.XInset + PluginChrome.XSize + 6f);
+                    FitTitle(windowTitle, wrt.rect.width - right, right, windowTitle.alignment, windowTitleSize);
+                }
+            }
+
             RefreshItemList();
             window.SetActive(false);
+        }
+
+        // The update badge is up (just left of the X): the title turns left-aligned and ends before
+        // the badge, the way the Timeline window shows its title.
+        void OnUpdateBadge(RectTransform badge)
+        {
+            if (window == null || badge == null || windowTitle == null) return;
+            RectTransform wrt = window.GetComponent<RectTransform>();
+            float badgeLeft = wrt.rect.width + badge.anchoredPosition.x - badge.sizeDelta.x * badge.pivot.x;
+            FitTitle(windowTitle, windowTitleLeft, badgeLeft - 6f, TextAnchor.MiddleLeft, windowTitleSize);
+        }
+
+        // Header titles are top-left anchored rects (PoseStudioBuild Place). FitTitle spans one from
+        // left to right (window x) and steps its font down, not below 11, until the text fits, so a
+        // title never runs under the X or the update badge.
+        static float TitleLeft(Text t)
+        {
+            RectTransform r = t.rectTransform;
+            return r.anchoredPosition.x - r.pivot.x * r.sizeDelta.x;
+        }
+
+        static void FitTitle(Text t, float left, float right, TextAnchor align, int size)
+        {
+            if (t == null) return;
+            RectTransform r = t.rectTransform;
+            float w = Mathf.Max(20f, right - left);
+            r.sizeDelta = new Vector2(w, r.sizeDelta.y);
+            r.anchoredPosition = new Vector2(left + r.pivot.x * w, r.anchoredPosition.y);
+            t.alignment = align;
+            FitTitleFont(t, size);
+        }
+
+        static void FitTitleFont(Text t, int size)
+        {
+            if (t == null) return;
+            t.fontSize = size;
+            float w = t.rectTransform.rect.width;
+            while (t.fontSize > 11 && t.preferredWidth > w) t.fontSize--;
         }
 
         void StyleIKInput(InputField f)
@@ -1924,7 +1992,7 @@ namespace PoseStudio
         {
             // Reload throws away unsaved edits, so keep them first: Restore unsaved undoes it.
             bool kept = safetyDirty;
-            if (kept) WriteSafetyCopy("before Reload");
+            if (kept) { offeredPath = FreshOfferedPath(); StartSafetyCopy("before Reload", true, false, offeredPath); }
             LoadConfig();
             Rebind();
             RefreshItemList();
@@ -1980,11 +2048,34 @@ namespace PoseStudio
         bool editorsWereOpen;
         GameObject restoreButton;
 
+        // Beside where Save writes, which is always writable (a starter config found in the
+        // VNyan folder can sit somewhere that needs admin rights).
         string SafetyPath()
         {
-            string basis = !string.IsNullOrEmpty(configPath) ? configPath : savePath;
-            string dir = string.IsNullOrEmpty(basis) ? Application.persistentDataPath : Path.GetDirectoryName(basis);
+            string dir = !string.IsNullOrEmpty(savePath) ? Path.GetDirectoryName(savePath) : Application.persistentDataPath;
             return Path.Combine(dir, SAFETY_FILE);
+        }
+
+        // The copy a Restore unsaved button is offering is set aside here, so the regular copies
+        // made while the offer is open (they rotate every minute) cannot push it out.
+        const string OFFERED_FILE = "posestudio.unsaved.offered.json";
+        string offeredPath;
+
+        string OfferedPath() { return Path.Combine(Path.GetDirectoryName(SafetyPath()), OFFERED_FILE); }
+
+        // About to write a new set-aside copy: clear the old one first, so if the write fails,
+        // Restore finds nothing rather than older work. (Waits for a copy still in flight.)
+        string FreshOfferedPath()
+        {
+            WaitForSafetyCopy();
+            string p = OfferedPath();
+            try
+            {
+                if (File.Exists(p)) File.Delete(p);
+                if (File.Exists(p + ".prev")) File.Delete(p + ".prev");
+            }
+            catch (Exception e) { Debug.LogWarning("[PoseStudio] could not clear the old set-aside copy: " + e.Message); }
+            return p;
         }
 
         bool EditorsOpen()
@@ -1998,6 +2089,15 @@ namespace PoseStudio
         // as a possible change. Far cheaper than comparing a 30 MB config every frame.
         void SafetyTick()
         {
+            // A copy that gave up (an edit changed a list under it, or the disk said no) is
+            // tried again a minute later, at most three times in a row.
+            int res = safetyResult;
+            if (res != 0)
+            {
+                safetyResult = 0;
+                if (res == 1) safetyFails = 0;
+                else if (++safetyFails <= 3 && !safetyDirty) { safetyDirty = true; safetyDirtySince = Time.unscaledTime; }
+            }
             bool open = EditorsOpen();
             bool press = Input.anyKeyDown || Input.GetMouseButton(0);
             if (press || Input.mouseScrollDelta.y != 0f) lastInputTime = Time.unscaledTime;
@@ -2014,24 +2114,64 @@ namespace PoseStudio
 
         void OnApplicationQuit()
         {
-            if (safetyDirty) WriteSafetyCopy("VNyan closing");
+            if (safetyDirty) { StartSafetyCopy("VNyan closing", true, true); return; }
+            WaitForSafetyCopy();
+            if (safetyResult == 2) StartSafetyCopy("VNyan closing, second try", true, true);
         }
 
-        void WriteSafetyCopy(string why)
+        // Writing the copy means serializing a 30 MB config, over a second of work, which froze
+        // VNyan while it ran on the main thread. So it runs on a thread of its own. An edit made
+        // meanwhile can land half in the copy or make it stop (a list changed under it); either
+        // way that edit marks the copy dirty again and it is redone after the next pause.
+        System.Threading.Thread safetyThread;
+        volatile int safetyResult;         // set by the copy: 1 written, 2 failed; read on the main thread
+        int safetyFails;
+
+        void WriteSafetyCopy(string why) { StartSafetyCopy(why, false, false, null); }
+
+        void StartSafetyCopy(string why, bool waitForBusy, bool runHere)
         {
-            safetyDirty = false;          // cleared first, so a failing disk is not retried every frame
-            if (config == null) return;
-            string path = SafetyPath();
+            StartSafetyCopy(why, waitForBusy, runHere, null);
+        }
+
+        // waitForBusy: finish a copy still being written first, instead of trying again later.
+        // runHere: write it on this thread (VNyan is closing, nothing is left to freeze).
+        // target: where to write, when not the regular copy (the one a Restore offer points at).
+        void StartSafetyCopy(string why, bool waitForBusy, bool runHere, string target)
+        {
+            if (config == null) { safetyDirty = false; return; }
+            if (safetyThread != null && safetyThread.IsAlive)
+            {
+                if (!waitForBusy) return;          // still dirty, so SafetyTick tries again
+                safetyThread.Join();
+            }
+            safetyDirty = false;
+            PoseConfig snap = config;
+            string path = target ?? SafetyPath();
+            if (runHere) { SafetyWrite(snap, path, why); return; }
+            safetyThread = new System.Threading.Thread(delegate() { SafetyWrite(snap, path, why); });
+            safetyThread.IsBackground = true;
+            safetyThread.Priority = System.Threading.ThreadPriority.BelowNormal;
+            safetyThread.Start();
+        }
+
+        void WaitForSafetyCopy()
+        {
+            if (safetyThread != null && safetyThread.IsAlive) safetyThread.Join(15000);
+        }
+
+        void SafetyWrite(PoseConfig snap, string path, string why)
+        {
             string tmp = path + ".tmp";
             try
             {
-                float t0 = Time.realtimeSinceStartup;
+                System.Diagnostics.Stopwatch sw0 = System.Diagnostics.Stopwatch.StartNew();
                 // Streamed straight to disk, same output as SaveConfig, without a 30 MB string.
                 using (StreamWriter sw = new StreamWriter(tmp, false, new System.Text.UTF8Encoding(false)))
                 using (JsonTextWriter jw = new JsonTextWriter(sw))
                 {
                     jw.Formatting = Formatting.None;
-                    JsonSerializer.CreateDefault().Serialize(jw, config);
+                    JsonSerializer.CreateDefault().Serialize(jw, snap);
                 }
                 // Swapped in whole, the copy before it kept as .prev: a crash on this PC can leave
                 // the newest file zero-filled, and then the one before it is still good.
@@ -2042,11 +2182,13 @@ namespace PoseStudio
                 }
                 else File.Move(tmp, path);
                 Debug.Log("[PoseStudio] unsaved work copied to " + path + " (" + why + ", "
-                          + ((Time.realtimeSinceStartup - t0) * 1000f).ToString("0") + " ms)");
+                          + sw0.ElapsedMilliseconds + " ms)");
+                safetyResult = 1;
             }
             catch (Exception e)
             {
-                Debug.LogWarning("[PoseStudio] could not keep a safety copy: " + e.Message);
+                safetyResult = 2;
+                Debug.LogWarning("[PoseStudio] could not keep a safety copy (" + why + "): " + e.Message);
                 try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
             }
         }
@@ -2057,12 +2199,34 @@ namespace PoseStudio
         {
             try
             {
-                string path = SafetyPath();
-                if (!File.Exists(path)) return;
-                if (File.Exists(configPath))
+                // The regular copy, or one set aside for an offer last time (work from before a
+                // Reload lives only there): the newest that is newer than the config and differs.
+                string path = null;
+                string[] cands = { SafetyPath(), OfferedPath() };
+                for (int i = 0; i < cands.Length; i++)
                 {
-                    if (File.GetLastWriteTimeUtc(path) <= File.GetLastWriteTimeUtc(configPath)) return;   // saved since
-                    if (SameBytes(path, configPath)) return;
+                    string c = cands[i];
+                    if (!File.Exists(c)) continue;
+                    if (path != null && File.GetLastWriteTimeUtc(c) <= File.GetLastWriteTimeUtc(path)) continue;
+                    if (File.Exists(configPath))
+                    {
+                        if (File.GetLastWriteTimeUtc(c) <= File.GetLastWriteTimeUtc(configPath)) continue;   // saved since
+                        if (SameBytes(c, configPath)) continue;
+                    }
+                    path = c;
+                }
+                if (path == null) return;
+                if (path == OfferedPath()) { offeredPath = path; ShowRestoreButton(File.GetLastWriteTime(path)); return; }
+                offeredPath = OfferedPath();
+                try
+                {
+                    File.Copy(path, offeredPath, true);
+                    if (File.Exists(path + ".prev")) File.Copy(path + ".prev", offeredPath + ".prev", true);
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning("[PoseStudio] could not set the unsaved copy aside: " + e.Message);
+                    offeredPath = path;
                 }
                 ShowRestoreButton(File.GetLastWriteTime(path));
             }
@@ -2088,12 +2252,21 @@ namespace PoseStudio
             }
         }
 
+        void HideRestoreButton()
+        {
+            offeredPath = null;
+            if (restoreButton == null) return;
+            restoreButton.SetActive(false);
+            LayFooter(false);
+        }
+
         void ShowRestoreButton(System.DateTime when)
         {
             if (restoreButton == null) restoreButton = MakeRestoreButton();
             if (restoreButton != null)
             {
                 restoreButton.SetActive(true);
+                LayFooter(true);
                 SetStatus("Unsaved work from " + when.ToString("MMM d, h:mm tt")
                           + " was kept safe. Press Restore unsaved to bring it back.");
             }
@@ -2119,6 +2292,21 @@ namespace PoseStudio
                 label.resizeTextForBestFit = true;
                 label.resizeTextMinSize = 8;
                 label.resizeTextMaxSize = Mathf.Max(label.fontSize, 9);
+            }
+
+            // Reload and Save share the footer: with Restore showing the row is split three ways
+            // (Reload, Restore unsaved, Save), and goes back to two when it hides.
+            Button reload = FindControl<Button>("Button_Reload");
+            RectTransform rrt = reload != null ? reload.GetComponent<RectTransform>() : null;
+            if (rrt != null && rrt.parent == srt.parent && SameRow(rrt, srt))
+            {
+                footReload = rrt;
+                footSave = srt;
+                reloadPos = rrt.anchoredPosition; reloadSize = rrt.sizeDelta;
+                savePos = srt.anchoredPosition; saveSize = srt.sizeDelta;
+                Debug.Log("[PoseStudio] Restore unsaved button shares the row with Reload and Save");
+                go.SetActive(false);
+                return go;
             }
 
             RectTransform rt = go.GetComponent<RectTransform>();
@@ -2149,6 +2337,48 @@ namespace PoseStudio
             Debug.Log("[PoseStudio] Restore unsaved button placed " + names[pick] + " Save");
             go.SetActive(false);
             return go;
+        }
+
+        RectTransform footReload, footSave;
+        Vector2 reloadPos, reloadSize, savePos, saveSize;
+
+        // Two buttons on one plain row: point anchors, same pivot, same height and line.
+        static bool SameRow(RectTransform a, RectTransform b)
+        {
+            if (a.anchorMin != b.anchorMin || a.anchorMax != b.anchorMax || a.pivot != b.pivot) return false;
+            if (Mathf.Abs(a.anchorMin.x - a.anchorMax.x) > 0.001f) return false;
+            return Mathf.Abs(a.anchoredPosition.y - b.anchoredPosition.y) <= 1f
+                && Mathf.Abs(a.sizeDelta.y - b.sizeDelta.y) <= 1f;
+        }
+
+        void LayFooter(bool three)
+        {
+            if (footReload == null || footSave == null || restoreButton == null) return;
+            if (!three)
+            {
+                footReload.anchoredPosition = reloadPos; footReload.sizeDelta = reloadSize;
+                footSave.anchoredPosition = savePos; footSave.sizeDelta = saveSize;
+                return;
+            }
+            RectTransform mid = restoreButton.GetComponent<RectTransform>();
+            float l1 = reloadPos.x - footReload.pivot.x * reloadSize.x;
+            float l2 = savePos.x - footSave.pivot.x * saveSize.x;
+            float left = Mathf.Min(l1, l2);
+            float right = Mathf.Max(l1 + reloadSize.x, l2 + saveSize.x);
+            float gap = Mathf.Max(0f, right - left - reloadSize.x - saveSize.x);
+            float w = (right - left - 2f * gap) / 3f;
+            RectTransform[] order = l1 <= l2
+                ? new RectTransform[] { footReload, mid, footSave }
+                : new RectTransform[] { footSave, mid, footReload };
+            for (int i = 0; i < 3; i++)
+            {
+                RectTransform c = order[i];
+                c.anchorMin = footSave.anchorMin;
+                c.anchorMax = footSave.anchorMax;
+                c.pivot = footSave.pivot;
+                c.sizeDelta = new Vector2(w, saveSize.y);
+                c.anchoredPosition = new Vector2(left + i * (w + gap) + c.pivot.x * w, savePos.y);
+            }
         }
 
         // Inside its parent and not on top of any visible sibling.
@@ -2184,7 +2414,8 @@ namespace PoseStudio
 
         void OnRestoreUnsaved()
         {
-            string path = SafetyPath();
+            WaitForSafetyCopy();              // a copy made just before a Reload may still be writing
+            string path = offeredPath ?? SafetyPath();
             PoseConfig got = null;
             string from = null;
             string[] tries = { path, path + ".prev" };
@@ -2205,7 +2436,7 @@ namespace PoseStudio
             Rebind();
             RefreshItemList();
             safetyDirty = false;          // it is still on disk, exactly as restored
-            if (restoreButton != null) restoreButton.SetActive(false);
+            HideRestoreButton();
             SetStatus("Restored your unsaved work from " + File.GetLastWriteTime(from).ToString("MMM d, h:mm tt")
                       + ". Press Save to keep it.");
         }
@@ -2267,6 +2498,10 @@ namespace PoseStudio
         // missing path to "" so UniVRM simply skips it instead of crashing.
         float lastClipGuard = -999f;
         readonly HashSet<string> clipGuardReported = new HashSet<string>();
+        // An avatar's clips do not change once it is loaded, so the check runs a few times over
+        // its first half minute and then stops (it walks every component on the avatar).
+        GameObject clipGuardAvatar;
+        int clipGuardRuns;
 
         void GuardVrmClips()
         {
@@ -2324,7 +2559,13 @@ namespace PoseStudio
         void Update()
         {
             SafetyTick();
-            if (Time.unscaledTime - lastClipGuard > 3f) { lastClipGuard = Time.unscaledTime; GuardVrmClips(); }
+            if (!ReferenceEquals(boundAvatar, clipGuardAvatar)) { clipGuardAvatar = boundAvatar; clipGuardRuns = 0; }
+            if (clipGuardRuns < 10 && Time.unscaledTime - lastClipGuard > 3f)
+            {
+                lastClipGuard = Time.unscaledTime;
+                clipGuardRuns++;
+                GuardVrmClips();
+            }
             // Live config reload: if the file changes underneath us (hand edited, or written by
             // a tool while tuning an animation to a model) pick it up instead of making the user
             // restart VNyan, which on this app means reloading the avatar too.
@@ -2340,7 +2581,11 @@ namespace PoseStudio
                         {
                             configStamp = w;
                             bool kept = safetyDirty;
-                            if (kept) WriteSafetyCopy("before taking the changed file");
+                            if (kept)
+                            {
+                                offeredPath = FreshOfferedPath();
+                                StartSafetyCopy("before taking the changed file", true, false, offeredPath);
+                            }
                             LoadConfig();
                             Rebind();
                             RefreshItemList();
@@ -2433,7 +2678,7 @@ namespace PoseStudio
             {
                 PoseItem it = config.items[i];
                 if (it == null || string.IsNullOrEmpty(it.hotkey)) continue;
-                int vk = MainVkOf(it.hotkey);
+                int vk = CachedCombo(it.hotkey).vk;
                 if (vk == 0) continue;
                 if (GlobalKeys.IsDown(vk))
                 {
@@ -2449,10 +2694,9 @@ namespace PoseStudio
             {
                 PoseItem it = config.items[i];
                 if (it == null || string.IsNullOrEmpty(it.hotkey)) continue;
-                int vk; bool needCtrl, needShift, needAlt;
-                if (!ParseComboVk(it.hotkey, out vk, out needCtrl, out needShift, out needAlt)) continue;
-                if (vk == 0 || !edgeDown.Contains(vk)) continue;
-                if (needCtrl != ctrl || needShift != shift || needAlt != alt) continue;
+                ParsedCombo pc = CachedCombo(it.hotkey);
+                if (!pc.ok || pc.vk == 0 || !edgeDown.Contains(pc.vk)) continue;
+                if (pc.ctrl != ctrl || pc.shift != shift || pc.alt != alt) continue;
                 TriggerItem(it);
             }
 
@@ -2499,11 +2743,23 @@ namespace PoseStudio
             return vk != 0;
         }
 
-        int MainVkOf(string combo)
+        struct ParsedCombo { public bool ok; public int vk; public bool ctrl, shift, alt; }
+
+        // Each binding string is parsed once and remembered. Parsing allocates (Split, Trim,
+        // Enum.Parse) and a key name that does not parse used to throw and catch every frame.
+        // Keyed by the string itself, so a changed binding is simply a new entry.
+        readonly Dictionary<string, ParsedCombo> comboCache = new Dictionary<string, ParsedCombo>();
+
+        ParsedCombo CachedCombo(string combo)
         {
-            int vk; bool c, s, a;
-            if (!ParseComboVk(combo, out vk, out c, out s, out a)) return 0;
-            return vk;
+            ParsedCombo pc;
+            if (!comboCache.TryGetValue(combo, out pc))
+            {
+                pc.ok = ParseComboVk(combo, out pc.vk, out pc.ctrl, out pc.shift, out pc.alt);
+                if (!pc.ok) pc.vk = 0;
+                comboCache[combo] = pc;
+            }
+            return pc;
         }
 
         void UpdateHotkeyLabel()
@@ -2753,6 +3009,36 @@ namespace PoseStudio
             Button close = FindIn<Button>(browserWindow, "Button_BoneClose");
             if (close != null) close.onClick.AddListener(CloseBrowser);
 
+            // Window chrome: the shared X replaces the Close button. That Close had a row of its own,
+            // so the list grows up into the freed row. The title (long in some modes) ends left of
+            // the X, and OpenBrowser steps its font down when a mode's title is too wide for that.
+            if (brt != null)
+            {
+                PluginChrome.EnsureCloseX(brt, CloseBrowser, uiFont);
+                if (PluginChrome.HideOtherClose(brt, "Button_BoneClose") > 0 && close != null)
+                {
+                    RectTransform list = FindIn<RectTransform>(browserWindow, "BoneScrollView");
+                    RectTransform crt = (RectTransform)close.transform;
+                    if (list != null && list.parent == crt.parent && Mathf.Approximately(list.pivot.y, 1f)
+                        && Mathf.Approximately(crt.pivot.y, 1f) && Mathf.Approximately(list.anchorMin.y, 1f)
+                        && Mathf.Approximately(list.anchorMax.y, 1f) && Mathf.Approximately(crt.anchorMin.y, 1f))
+                    {
+                        float freed = crt.anchoredPosition.y - list.anchoredPosition.y;   // list top below the Close row's top
+                        if (freed > 0f)
+                        {
+                            list.anchoredPosition = new Vector2(list.anchoredPosition.x, list.anchoredPosition.y + freed);
+                            list.sizeDelta = new Vector2(list.sizeDelta.x, list.sizeDelta.y + freed);
+                        }
+                    }
+                }
+                if (browserTitle != null)
+                {
+                    browserTitleSize = browserTitle.fontSize;
+                    FitTitle(browserTitle, TitleLeft(browserTitle),
+                        brt.rect.width - (PluginChrome.XInset + PluginChrome.XSize + 6f), browserTitle.alignment, browserTitleSize);
+                }
+            }
+
             PoseUtil.FastDropdownScroll(browserWindow, 40f);
             browserWindow.SetActive(false);
         }
@@ -2793,6 +3079,7 @@ namespace PoseStudio
                     browserTitle.text = "MMD Import: adjust orientation (previews live)";
                 else
                     browserTitle.text = "Model Bones: pick one to add";
+                FitTitleFont(browserTitle, browserTitleSize);   // keep it clear of the X
             }
             EnsureAvatar();
             RebuildTree();
@@ -3538,6 +3825,8 @@ namespace PoseStudio
 
         void SaveConfig()
         {
+            // A copy still being written would land after this save and look newer than it.
+            WaitForSafetyCopy();
             try
             {
                 if (config == null) { SetStatus("nothing to save"); return; }
@@ -3558,7 +3847,7 @@ namespace PoseStudio
                 try { ourWrite = File.GetLastWriteTimeUtc(configPath); configStamp = ourWrite; } catch { }
                 SetStatus("Saved to " + target);
                 safetyDirty = false;
-                if (restoreButton != null) restoreButton.SetActive(false);
+                HideRestoreButton();
             }
             catch (Exception e)
             {

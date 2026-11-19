@@ -45,6 +45,7 @@ namespace PoseStudio
             public ItemRT rt;
             public ITransformTarget target;
             public string channelId; // keyframe-channel id for this target ("bone:"/"mesh:")
+            public int hint = -1;    // where that channel sat in the last keyframe looked at
 
             // Retarget, filled in when the item carries a rigRef (see RetargetBone).
             public bool retarget;
@@ -68,6 +69,11 @@ namespace PoseStudio
             public Vector3 lastScale = Vector3.one; // final scale this frame (for the late re-apply)
             public bool usesScale;                  // any active bind drives scale
             public readonly List<BoneBind> binds = new List<BoneBind>();
+            // Position offsets are in body terms; this turns them into the parent's frame
+            // (see SetBodyFrame). Off for a parent that rests square to the body.
+            public bool bodyFrame;
+            public Quaternion bodyRot = Quaternion.identity;
+            public Vector3 bodyScaleIn = Vector3.one, bodyScaleOut = Vector3.one;
         }
 
         class BlendBind
@@ -75,6 +81,7 @@ namespace PoseStudio
             public ItemRT rt;
             public BlendTarget target;
             public string channelId; // keyframe-channel id for this shape ("blend:Mesh::Shape")
+            public int hint = -1;
         }
 
         // One VRM blendshape clip driven by one or more items. Its summed value is handed to
@@ -226,10 +233,19 @@ namespace PoseStudio
             public Vector3 tgtPos;       // target position in `space` (local to space)
             public Quaternion tgtRot;    // target rotation in `space` (local to space)
             public string channelId;     // "ik:<name>" animated-offset channel id
+            public int hint = -1;
             public bool animated;        // true if a keyframe carries an ik: offset channel
             public bool engaged;
             public Quaternion baseUp, baseMid, baseEnd; // captured local rots for restore
+
+            // Foot goals steer the knee instead of trusting the existing bend (see SolveLegIK).
+            // Bone-local directions from the rest pose: along each bone, and the body's front.
+            public bool leg;
+            public Vector3 upAlong, upFront, midAlong, midFront, endFront;
         }
+
+        // Off = every goal uses the plain solver, as before foot goals were steered.
+        public static bool steerKnees = true;
 
         GameObject avatar;
         Animator animator;
@@ -403,6 +419,60 @@ namespace PoseStudio
             return tr != null ? tr.rotation : Quaternion.identity;
         }
 
+        // A position offset is written in BODY terms, like a fit push: metres on the avatar as
+        // it stands, x to the side, y up, z forward. localPosition is in the parent's frame, and
+        // the two agree on a normal VRM. A VRChat body hangs its hips under an armature node
+        // turned a quarter turn onto its back (and scaled), so a hip dip written as "down" slid
+        // the hips forward instead. Only that case is converted: a parent that sits above the
+        // skeleton (no humanoid bone at or above it). Such a node never moves, so its frame now is
+        // its rest frame. Anything under a humanoid bone keeps plain local offsets, exactly as
+        // before, so they still turn with their bone (glasses under the head follow a tilt).
+        void SetBodyFrame(BoneGroup g)
+        {
+            g.bodyFrame = false;
+            Transform p = g.t != null ? g.t.parent : null;
+            if (p == null || avatar == null || animator == null || !animator.isHuman) return;
+            for (Transform up = p; up != null && up != avatar.transform; up = up.parent)
+                if (IsHumanBone(up)) return;
+            Quaternion q = Quaternion.Inverse(p.rotation) * avatar.transform.rotation;
+            Vector3 sIn = avatar.transform.lossyScale, sP = p.lossyScale;
+            if (Mathf.Abs(sP.x) < 1e-6f || Mathf.Abs(sP.y) < 1e-6f || Mathf.Abs(sP.z) < 1e-6f) return;
+            Vector3 sOut = new Vector3(1f / sP.x, 1f / sP.y, 1f / sP.z);
+            bool square = Quaternion.Angle(q, Quaternion.identity) < 0.01f
+                && (sIn - sP).sqrMagnitude < 1e-10f;
+            if (square) return;
+            g.bodyFrame = true;
+            g.bodyRot = q;
+            g.bodyScaleIn = sIn;
+            g.bodyScaleOut = sOut;
+        }
+
+        bool IsHumanBone(Transform t)
+        {
+            for (int b = 0; b < (int)HumanBodyBones.LastBone; b++)
+                if (animator.GetBoneTransform((HumanBodyBones)b) == t) return true;
+            return false;
+        }
+
+        Vector3 RestPosOf(Transform tr)
+        {
+            Vector3 p;
+            if (tr != null && restPos.TryGetValue(tr.name, out p)) return p;
+            return tr != null ? tr.position : Vector3.zero;
+        }
+
+        // A goal that pins a foot: by the humanoid mapping first, then by name, so a goal written
+        // against a rig without one still counts.
+        bool IsFootGoal(IKGoal goal, Transform end)
+        {
+            if (animator != null && animator.isHuman && end != null &&
+                (end == animator.GetBoneTransform(HumanBodyBones.LeftFoot) ||
+                 end == animator.GetBoneTransform(HumanBodyBones.RightFoot)))
+                return true;
+            string n = (goal.end ?? "").ToLowerInvariant();
+            return n.Contains("foot") || n.Contains("ankle");
+        }
+
         // A short, stable name for a body: limb lengths and widths in centimetres. Two different
         // models almost never match, and the same model always does.
         static string RigSignature(float leg, float arm, float ankles, float shoulders)
@@ -507,6 +577,7 @@ namespace PoseStudio
                         {
                             g = new BoneGroup();
                             g.t = tr;
+                            SetBodyFrame(g);
                             boneMap[tr] = g;
                             boneGroups.Add(g);
                         }
@@ -550,6 +621,7 @@ namespace PoseStudio
                         {
                             g = new BoneGroup();
                             g.t = tr;
+                            SetBodyFrame(g);
                             boneMap[tr] = g;
                             boneGroups.Add(g);
                         }
@@ -654,6 +726,16 @@ namespace PoseStudio
                         ib.rt = rt;
                         ib.goal = goal;
                         ib.up = up; ib.mid = mid; ib.end = end; ib.space = sp;
+                        ib.leg = IsFootGoal(goal, end);
+                        if (ib.leg)
+                        {
+                            Vector3 front = RestRotOf(avatar.transform) * Vector3.forward;
+                            ib.upAlong = Quaternion.Inverse(RestRotOf(up)) * (RestPosOf(mid) - RestPosOf(up)).normalized;
+                            ib.midAlong = Quaternion.Inverse(RestRotOf(mid)) * (RestPosOf(end) - RestPosOf(mid)).normalized;
+                            ib.upFront = Quaternion.Inverse(RestRotOf(up)) * front;
+                            ib.midFront = Quaternion.Inverse(RestRotOf(mid)) * front;
+                            ib.endFront = Quaternion.Inverse(RestRotOf(end)) * front;
+                        }
                         if (!goal.capture)
                         {
                             ib.captured = true;
@@ -860,20 +942,35 @@ namespace PoseStudio
             a = 0; b = (n > 1) ? 1 : 0; u = 0f;
         }
 
-        static KeyframeChannel ChannelAt(List<PoseKeyframe> ks, int idx, string id)
+        // An animation's keyframes almost always list their channels in the same order, so the
+        // index this bind matched last time is tried first and the list is only scanned when
+        // that misses. The id is still compared, so a stale hint costs one extra compare.
+        static KeyframeChannel ChannelAt(List<PoseKeyframe> ks, int idx, string id, ref int hint)
         {
             if (ks == null || idx < 0 || idx >= ks.Count) return null;
-            return KeyChannels.Find(ks[idx], id);
+            PoseKeyframe key = ks[idx];
+            if (key == null || key.channels == null) return null;
+            List<KeyframeChannel> ch = key.channels;
+            if (hint >= 0 && hint < ch.Count)
+            {
+                KeyframeChannel c = ch[hint];
+                if (c != null && c.id == id) return c;
+            }
+            for (int i = 0; i < ch.Count; i++)
+            {
+                if (ch[i] != null && ch[i].id == id) { hint = i; return ch[i]; }
+            }
+            return null;
         }
 
         // Interpolate a transform channel's offset between keyframes a and b. Missing
         // channels read as identity (zero pos/rot, unit scale) so a target absent from a
         // keyframe simply contributes nothing there.
-        static void SampleTransformChannel(List<PoseKeyframe> ks, int a, int b, float u, string id,
+        static void SampleTransformChannel(List<PoseKeyframe> ks, int a, int b, float u, string id, ref int hint,
             out Vector3 pos, out Quaternion rot, out Vector3 scl)
         {
-            KeyframeChannel ca = ChannelAt(ks, a, id);
-            KeyframeChannel cb = ChannelAt(ks, b, id);
+            KeyframeChannel ca = ChannelAt(ks, a, id, ref hint);
+            KeyframeChannel cb = ChannelAt(ks, b, id, ref hint);
             Vector3 pa = ca != null ? PoseUtil.ToVector3(ca.position, Vector3.zero) : Vector3.zero;
             Vector3 pb = cb != null ? PoseUtil.ToVector3(cb.position, Vector3.zero) : Vector3.zero;
             pos = Vector3.Lerp(pa, pb, u);
@@ -900,10 +997,10 @@ namespace PoseStudio
         }
 
         // Interpolate a blendshape channel's weight between keyframes a and b.
-        static float SampleBlendChannel(List<PoseKeyframe> ks, int a, int b, float u, string id)
+        static float SampleBlendChannel(List<PoseKeyframe> ks, int a, int b, float u, string id, ref int hint)
         {
-            KeyframeChannel ca = ChannelAt(ks, a, id);
-            KeyframeChannel cb = ChannelAt(ks, b, id);
+            KeyframeChannel ca = ChannelAt(ks, a, id, ref hint);
+            KeyframeChannel cb = ChannelAt(ks, b, id, ref hint);
             float wa = ca != null ? ca.weight : 0f;
             float wb = cb != null ? cb.weight : 0f;
             return Mathf.Lerp(wa, wb, u);
@@ -1002,7 +1099,7 @@ namespace PoseStudio
                     if (bind.rt.kfMode)
                     {
                         SampleTransformChannel(bind.rt.item.keyframes, bind.rt.kfA, bind.rt.kfB, bind.rt.kfU,
-                            bind.channelId, out offPos, out offRot, out offScl);
+                            bind.channelId, ref bind.hint, out offPos, out offRot, out offScl);
                     }
                     else
                     {
@@ -1048,7 +1145,11 @@ namespace PoseStudio
                     g.baseScale = g.t.localScale;
                 }
 
-                g.t.localPosition = g.basePos + sumPos;
+                // Body terms into the parent's frame (see SetBodyFrame).
+                Vector3 localPos = sumPos;
+                if (g.bodyFrame)
+                    localPos = Vector3.Scale(g.bodyRot * Vector3.Scale(sumPos, g.bodyScaleIn), g.bodyScaleOut);
+                g.t.localPosition = g.basePos + localPos;
                 g.t.localRotation = g.baseRot * combRot;
                 g.t.localScale = Vector3.Scale(g.baseScale, combScale);
                 g.usesScale = anyScale;
@@ -1093,7 +1194,7 @@ namespace PoseStudio
                 {
                     Vector3 sp; Quaternion sr; Vector3 ss;
                     SampleTransformChannel(ib.rt.item.keyframes, ib.rt.kfA, ib.rt.kfB, ib.rt.kfU,
-                        ib.channelId, out sp, out sr, out ss);
+                        ib.channelId, ref ib.hint, out sp, out sr, out ss);
                     dPos = sp; dRot = sr;
                     if (ib.retarget)
                     {
@@ -1112,7 +1213,26 @@ namespace PoseStudio
                 }
                 else { worldTarget = ib.tgtPos + dPos; worldRot = ib.tgtRot * dRot; }
 
-                SolveTwoBoneIK(ib.up, ib.mid, ib.end, worldTarget, a);
+                if (ib.leg && steerKnees)
+                {
+                    // The knee points the way the pinned foot points. A foot turned backwards
+                    // (kneeling, seiza) would put the knee behind the leg, so the backward part
+                    // is dropped, measured against the thigh's own front (it turns with the hips
+                    // in a turning dance). Dropping only that part keeps the knee from jumping
+                    // when a foot is turned out near sideways.
+                    Quaternion footRot = ib.goal.holdRotation ? worldRot : ib.end.rotation;
+                    Vector3 pole = footRot * ib.endFront;
+                    Vector3 thighFwd = ib.up.rotation * ib.upFront;
+                    float back = Vector3.Dot(pole, thighFwd);
+                    if (back < 0f)
+                    {
+                        pole -= thighFwd * back;
+                        if (pole.sqrMagnitude < 1e-4f) pole = thighFwd;
+                    }
+                    SolveLegIK(ib, worldTarget, pole, a);
+                }
+                else
+                    SolveTwoBoneIK(ib.up, ib.mid, ib.end, worldTarget, a);
                 if (ib.goal.holdRotation)
                     ib.end.rotation = Quaternion.Slerp(ib.end.rotation, worldRot, a);
             }
@@ -1131,7 +1251,7 @@ namespace PoseStudio
                     if (a <= EPS) continue;
                     any = true;
                     float w = bind.rt.kfMode
-                        ? SampleBlendChannel(bind.rt.item.keyframes, bind.rt.kfA, bind.rt.kfB, bind.rt.kfU, bind.channelId)
+                        ? SampleBlendChannel(bind.rt.item.keyframes, bind.rt.kfA, bind.rt.kfB, bind.rt.kfU, bind.channelId, ref bind.hint)
                         : bind.target.weight;
                     sum += a * w;
                 }
@@ -1157,7 +1277,7 @@ namespace PoseStudio
                     if (a <= EPS) continue;
                     if (a > maxAmt) maxAmt = a;
                     float w = bind.rt.kfMode
-                        ? SampleBlendChannel(bind.rt.item.keyframes, bind.rt.kfA, bind.rt.kfB, bind.rt.kfU, bind.channelId)
+                        ? SampleBlendChannel(bind.rt.item.keyframes, bind.rt.kfA, bind.rt.kfB, bind.rt.kfU, bind.channelId, ref bind.hint)
                         : bind.target.weight;
                     sum += a * w;
                 }
@@ -1257,6 +1377,7 @@ namespace PoseStudio
             for (int gi = 0; gi < blendGroups.Count; gi++)
             {
                 BlendGroup g = blendGroups[gi];
+                if (!g.want && !g.engaged) continue;      // not ours this frame and nothing to put back
                 if (g.r == null) continue;
                 float cur = g.r.GetBlendShapeWeight(g.index);
                 if (g.want)
@@ -1351,6 +1472,57 @@ namespace PoseStudio
                 up.rotation = Quaternion.Slerp(upOrig, up.rotation, weight);
                 mid.rotation = Quaternion.Slerp(midOrig, mid.rotation, weight);
             }
+        }
+
+        // Two-bone IK for a leg, with the knee steered instead of left to chance.
+        //
+        // The plain solver bends in whatever plane the limb already bends in, then swings the
+        // thigh onto the target by the shortest turn. A VRM's legs carry a few degrees of
+        // forward bend, so that comes out right there. A VRChat body stands with its legs all
+        // but straight, the plane was noise and the swing rolled it further: measured, knees bent
+        // 60 degrees with almost none of it forward, and the legs crossed into an X. So the knee
+        // goes where it belongs, in front, toward the way the foot points, and each bone is laid
+        // down whole (its direction AND its roll) from its rest pose, so the knee bends as a hinge.
+        static void SolveLegIK(IKBind ib, Vector3 target, Vector3 pole, float weight)
+        {
+            Transform up = ib.up, mid = ib.mid, end = ib.end;
+            Quaternion upOrig = up.rotation;
+            Quaternion midOrig = mid.rotation;
+
+            Vector3 a = up.position;
+            float lab = Vector3.Distance(a, mid.position);
+            float lcb = Vector3.Distance(mid.position, end.position);
+            Vector3 toTarget = target - a;
+            if (lab < 1e-5f || lcb < 1e-5f || toTarget.sqrMagnitude < 1e-10f) return;
+            Vector3 dir = toTarget.normalized;
+            float d = Mathf.Clamp(toTarget.magnitude, Mathf.Abs(lab - lcb) + 1e-4f, lab + lcb - 1e-4f);
+
+            // The knee sits on the circle where the two bones meet, on the pole's side of it.
+            Vector3 side = Vector3.ProjectOnPlane(pole, dir);
+            if (side.sqrMagnitude < 1e-8f) side = Vector3.ProjectOnPlane(mid.position - a, dir);
+            if (side.sqrMagnitude < 1e-8f) return;
+            side.Normalize();
+            float x = (lab * lab - lcb * lcb + d * d) / (2f * d);
+            float h = Mathf.Sqrt(Mathf.Max(0f, lab * lab - x * x));
+            Vector3 knee = a + dir * x + side * h;
+            Vector3 foot = a + dir * d;
+
+            up.rotation = LayBone(knee - a, side, ib.upAlong, ib.upFront);
+            mid.rotation = LayBone(foot - knee, side, ib.midAlong, ib.midFront);
+
+            if (weight < 0.999f)
+            {
+                up.rotation = Quaternion.Slerp(upOrig, up.rotation, weight);
+                mid.rotation = Quaternion.Slerp(midOrig, mid.rotation, weight);
+            }
+        }
+
+        // The world rotation that lays a bone's rest axes (along it, and its front) onto these.
+        static Quaternion LayBone(Vector3 along, Vector3 front, Vector3 localAlong, Vector3 localFront)
+        {
+            Quaternion world = Quaternion.LookRotation(along, front);
+            Quaternion local = Quaternion.LookRotation(localAlong, localFront);
+            return world * Quaternion.Inverse(local);
         }
 
         // Release every engaged bone/shape back to its captured base (used when disabling).

@@ -126,6 +126,16 @@ namespace PoseStudio
             Button mkn = FindIn<Button>("Button_TLMaskNone");
             if (mkn != null) mkn.onClick.AddListener(OnMaskNone);
 
+            // Window chrome: the shared X (same look in every plugin) takes over from the bundled
+            // 28x24 X. It runs the old button's handler (Hide also ends a scrub or key drag), then
+            // the old one is hidden. The left-aligned title already ends well before the X.
+            if (wrt != null)
+            {
+                if (close != null) PluginChrome.EnsureCloseX(wrt, delegate { close.onClick.Invoke(); }, UiFont());
+                else PluginChrome.EnsureCloseX(wrt, Hide, UiFont());
+                PluginChrome.HideOtherClose(wrt, "Button_TLClose");
+            }
+
             wired = true;
             window.SetActive(false);
         }

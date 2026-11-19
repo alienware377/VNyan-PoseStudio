@@ -16,9 +16,9 @@
 > This repo is now just Pose Studio. Already have all three installed? Nothing changes for you:
 > each installer only updates its own plugins.
 
-> **New in v2.5.0:** the bundled **Hip Sway Dance**, **Fit to this model** sliders, VRM expressions
-> in the blendshape picker, blendshape weights from -1000% to +1000%, a **Restore unsaved** safety
-> copy, folding window sections, and blendshapes that VNyan no longer paints over.
+> **New in v2.6.0:** no more freezes while you edit (the safety copy is made in the background),
+> knees that bend forward on foot IK, an **Update** button in the window when a new version is out,
+> and a **Restore unsaved** button that sits beside Reload and Save instead of on top of Reload.
 
 ---
 
@@ -115,10 +115,12 @@ Click a section heading to fold it open or shut.
 ### Restore unsaved
 
 Pose Studio keeps a spare copy of changes you haven't saved yet: a minute after you stop editing,
-when you close its windows, before Reload, and when VNyan closes. It goes to a separate file,
+when you close its windows, before Reload, and when VNyan closes. It's written in the background,
+so VNyan keeps running smoothly while it happens. It goes to a separate file,
 `posestudio.unsaved.json`, and never touches your real settings. If VNyan closed before you
-pressed Save, a **Restore unsaved** button shows up next to Save the next time; it also undoes an
-accidental Reload. Press **Save** afterwards to keep what you restored.
+pressed Save, a **Restore unsaved** button shows up between Reload and Save the next time; it also
+undoes an accidental Reload. The copy it offers is set aside, so clicking around first can't
+replace it. Press **Save** afterwards to keep what you restored.
 
 ### The bundled Hip Sway Dance
 
@@ -212,6 +214,10 @@ In the Pose Studio window, open **Inverse kinematics (IK)** and click **Add IK G
 
 After editing goals, click **Reload** to capture and apply them again.
 
+Foot goals bend the knee forward, toward the way the pinned foot points (never backwards, even
+when the foot is turned back for a kneel). That keeps knees from bending sideways or crossing on
+avatars whose legs stand perfectly straight.
+
 #### In `posestudio.json`
 
 ```json
@@ -240,7 +246,9 @@ After editing goals, click **Reload** to capture and apply them again.
 
 - While on, a toggle **holds** the bones and meshes it uses at (rest + offset), which pauses the
   avatar's idle animation on those bones only. Pick just what you mean to move.
-- Offsets are local; very large rotations on humanoid bones can look odd.
+- Position offsets are in body terms (x to the side, y up, z forward), also on avatars whose
+  skeleton isn't lined up with the body, so a hip dip always goes down. Rotations are local; very
+  large rotations on humanoid bones can look odd.
 - Hotkeys work everywhere (even when VNyan isn't in front) through Windows' `GetAsyncKeyState`.
 - Blendshapes are applied after VNyan's own face update, so VNyan doesn't paint over them and
   tracking still shows underneath.
